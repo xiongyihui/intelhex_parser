@@ -2,7 +2,7 @@
 #include "stdio.h"
 #include "string.h"
 
-#define LOG(args...)        printf(args)
+#define LOG(args...)     //   printf(args)
 
 // logic - Every buf 512 bytes
 //  - Build and return structure
@@ -11,6 +11,15 @@
 //  - always write decoded data to RAM
 
 #define MAX_RECORD_SIZE   0x25
+
+typedef enum {
+    DATA_RECORD = 0,
+	EOF_RECORD  = 0x01, /* End Of File */
+	ESA_RECORD  = 0x02, /* Extended Segment Address */
+	SSA_RECORD  = 0x03, /* Start Segment Address */
+	ELA_RECORD  = 0x04, /* Extended Linear Address */
+	SLA_RECORD  = 0x05,  /* Start Linear Address */
+} hex_record_t;
 
 
 typedef union hex_line_t hex_line_t;
@@ -41,7 +50,7 @@ static uint8_t ctoh(char c)
 static uint8_t validate_checksum(hex_line_t *record)
 {
     uint8_t i = 0, result = 0;
-    for ( ; i < (record->byte_count+5); i++) {
+    for ( ; i < (record->byte_count + 5); i++) {
         result += record->buf[i];
     }
     return result == 0;
@@ -52,60 +61,77 @@ void reset_hex_parser(void)
 
 }
 
-int32_t parse_hex_blob(uint8_t **pbuf, uint32_t *size, uint32_t *address)
+int32_t intelhex_parse(uint8_t **p_hex_buf, uint8_t **p_bin_buf, uint32_t *address, uint32_t hex_buf_size,  uint32_t bin_buf_size)
 {
     static hex_line_t line;
     static uint8_t low_nibble = 0, idx = 0;
     static uint32_t base_address = 0;
     static uint8_t record_processed = 0;
     
-    uint8_t *ptr = *pbuf;
-    uint8_t *input_buf = ptr;
-    uint8_t *end = ptr + *size;
-    uint8_t *line_header = ptr;
+    uint8_t *hex_ptr = *p_hex_buf;
+    uint8_t *bin_ptr = *p_bin_buf;
+    uint8_t *input_buf = hex_ptr;
+    uint8_t *hex_end = hex_ptr + hex_buf_size;
+    uint32_t bin_size = 0;
     
-    int32_t return_value = DATA_RECORD;
+    int32_t return_value = INTELHEX_TO_CONTINUE;
+    *address = 0;
 
-    *size = 0;
-
-    while (ptr < end) {
-        uint8_t ch = *ptr;
-        ptr++;
+    while (hex_ptr < hex_end) {
+        uint8_t ch = *hex_ptr;
+        hex_ptr++;
         
         if (':' == ch) {
-            line_header = ptr - 1;
             memset(line.buf, 0, sizeof(hex_line_t));
             low_nibble = 0;
             idx = 0;
             record_processed = 0;
         } else if (('\r' == ch) || ('\n' == ch)) {  // End Of Line
-            if (record_processed) {   // line is already processed 
+            if (1 == record_processed) {   // line is already processed 
                 continue;
+            } else if (0 == record_processed) {
+                line.address = (line.buf[1] << 8) + line.buf[2];  // fix address
             }
-
-            if (!validate_checksum(&line)) {
-                return INVALID_RECORD;
-            }
-
-            line.address = (line.buf[1] << 8) + line.buf[2];  // fix address
-
+            
             record_processed = 1;
 
+            if (!validate_checksum(&line)) {
+                return INTELHEX_CHECKSUM_MISMATCH;
+            }
+
             if (DATA_RECORD == line.record_type) {
-                // verify this is a continous block of memory or need to exit and dump
-                if ((*size != 0) && (base_address + line.address) != *address) {
+                // find discrete blocks, process current line next time
+                if (bin_size && ((base_address + line.address) != *address)) {
                     LOG("Memory from 0x%X to 0x%X is skipped.\n", *address, base_address + line.address);
                 
-                    ptr = line_header;                       // leave current line to parse next time
-                    return_value = DATA_RECORD;
+                    hex_ptr--;             // roll back EOF, leave current line to process next time
+                    record_processed = 2;  // avoid changing line.address next time
+                    
+                    return_value = INTELHEX_TO_WRITE;
+                    break;
+                }
+                
+                // bin buffer has not enough space left, process current line next time
+                if ((bin_size + line.byte_count) > bin_buf_size) {
+                    LOG("bin buffer has not enough space.\n");
+                    
+                    hex_ptr--;             // roll back EOF, leave current line to process next time
+                    record_processed = 2;  // avoid changing line.address next time
+                    
+                    return_value = INTELHEX_TO_WRITE;
                     break;
                 }
 
-                // move from line buffer back to input buffer
-                //  memcpy((uint8_t *)input_buf + *size, (uint8_t *)line.data, line.byte_count);
-                *size += line.byte_count;
-                // this stores the last known end address of decoded data
+                // move data from line buffer to bin buffer
+                memcpy(bin_ptr, (uint8_t *)line.data, line.byte_count);
+                bin_ptr  += line.byte_count;
+                bin_size += line.byte_count;
+                
+                // store the end address of bin data
                 *address = base_address + line.address + line.byte_count;
+            } else if (EOF_RECORD == line.record_type) {
+                return_value = INTELHEX_DONE;
+                break;
             } else {
                 if (ELA_RECORD == line.record_type) {
                     base_address = (line.data[0] << 24) | (line.data[1] << 16);
@@ -116,15 +142,19 @@ int32_t parse_hex_blob(uint8_t **pbuf, uint32_t *size, uint32_t *address)
                     
                     LOG("Extend Segment Address: 0x%X\n", base_address);
                 }
-                
-                return_value = line.record_type;
-
+                                
+                return_value = INTELHEX_TO_WRITE;
                 break;
             }
         } else {
             if (low_nibble) {
-                line.buf[idx] |= ctoh(ch) & 0xf;
-                idx++;
+                if (idx < sizeof(line)) {
+                    line.buf[idx] |= ctoh(ch) & 0xf;
+                    idx++;
+                } else {
+                    LOG("Line is too long. Line buffer is not enough.\n");
+                    return INTELHEX_LINE_TOO_LONG;
+                }
             }
             else {
                 line.buf[idx] = ctoh(ch) << 4;
@@ -133,8 +163,10 @@ int32_t parse_hex_blob(uint8_t **pbuf, uint32_t *size, uint32_t *address)
         }
     }
 
-    *address = *address - *size; // figure the start address for the buffer before returning
-    *pbuf = ptr;
+    *address = *address - bin_size; // calculate the start address for bin data
+    *p_bin_buf = bin_ptr;
+    *p_hex_buf = hex_ptr;
+    
     return return_value;
 }
 

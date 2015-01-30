@@ -4,16 +4,21 @@
 #include <string.h>
 #include "intelhex.h"
 
-uint8_t buf[1024];
+#define BIN_PAGE_SIZE   256
+
+uint8_t hex_buf[1024];
+uint8_t bin_buf[BIN_PAGE_SIZE];
 
 int main(int argc, char *argv[]) {
     int status;
-    uint8_t *ptr;
-    uint8_t *end;
-    uint32_t size = 0;
+    uint8_t *hex_ptr;
+    uint8_t *hex_end;
+    uint8_t *bin_ptr = bin_buf;
+    uint8_t *bin_end = bin_buf + sizeof(bin_buf);
     uint32_t addr = 0;
-    uint32_t start_addr = 0;
-    uint32_t data_size = 0;
+    uint32_t continuous_data_start = 0;
+    uint32_t continuous_data_size = 0;
+    uint32_t bin_size;
     
     FILE *f;
     char *filename = "example.hex";
@@ -30,47 +35,72 @@ int main(int argc, char *argv[]) {
     
 
 	while (1) {
-        int len = fread(buf, 1, sizeof(buf), f);
+        int len = fread(hex_buf, 1, sizeof(hex_buf), f);
         if (len <= 0) {
             fclose(f);
             printf("End Of File. File is incomplete\n");
             return -1;
         }
         
-        end = buf + len;
-
-        ptr = buf;
+        hex_end = hex_buf + len;
+        hex_ptr = hex_buf;
         do {
-            size = end - ptr;
-            status = parse_hex_blob(&ptr, &size, &addr);
+            uint32_t hex_buf_size = hex_end - hex_ptr;
+            uint32_t bin_buf_size = bin_end - bin_ptr;
             
-            if (DATA_RECORD != status || 0 != size) {
-                if ((start_addr + data_size) == addr) {
-                    data_size += size;
-                } else {
-                    printf("0x%X: 0x%X bytes data block\n", start_addr, data_size);
-                    start_addr = addr;
-                    data_size = size;
+            uint8_t *last_bin_ptr = bin_ptr;
+            uint32_t new_bin;
+            
+            status = intelhex_parse(&hex_ptr, &bin_ptr, &addr, hex_buf_size, bin_buf_size);
+
+            bin_size = bin_ptr - bin_buf;
+            
+            new_bin = bin_ptr - last_bin_ptr;
+            if (new_bin && (continuous_data_start + continuous_data_size) != addr) {
+                if (continuous_data_size) {
+                    printf("0x%X: 0x%X bytes data block\n", continuous_data_start, continuous_data_size);
                 }
+                continuous_data_start = addr;
+                continuous_data_size  = new_bin;
+            } else {
+                continuous_data_size += new_bin;
             }
             
-            
-            
-            if (EOF_RECORD == status) {
-                if (data_size != 0) {
-                    printf("0x%X: 0x%X bytes data block\n", start_addr, data_size);
-                }
-            
-                printf("End Of File. Mission Complete\n");
-                fclose(f);
-                return 0;
-            } else if (INVALID_RECORD == status) {
+            if (0 > status) {
                 printf("Invalid record. Exit\n");
                 fclose(f);
                 return -2;
             }
+            
+            if (INTELHEX_DONE == status) {                
+                // write bin data
+                printf("--> 0x%X bin\n", bin_size);
+            
+                printf("Get EOF record. Mission Complete\n");
+                fclose(f);
+                return 0;
+            }
+            
+            if (INTELHEX_TO_WRITE == status) {
+                if (0 < bin_size) {
+                    // write bin data
+                    printf("--> 0x%X bin\n", bin_size);
+                    
+                    bin_ptr = bin_buf;
+                }
+                
+                continue;
+            }
+            
+            if (BIN_PAGE_SIZE <= bin_size) {
+                // write a page of bin data
+                printf("--> 0x%X bin\n", BIN_PAGE_SIZE);
+                
+                memcpy(bin_buf, bin_buf + BIN_PAGE_SIZE, bin_size - BIN_PAGE_SIZE);
+                bin_ptr -= BIN_PAGE_SIZE;
+            }
 
-        } while (ptr < end); 
+        } while (hex_ptr < hex_end); 
 
 	}
 	

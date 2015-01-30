@@ -7,20 +7,20 @@
 extern "C" {
 #endif
 
-typedef enum hex_record_t {
-    INVALID_RECORD = -1,
-    DATA_RECORD = 0,
-	EOF_RECORD  = 0x01, /* End Of File */
-	ESA_RECORD  = 0x02, /* Extended Segment Address */
-	SSA_RECORD  = 0x03, /* Start Segment Address */
-	ELA_RECORD  = 0x04, /* Extended Linear Address */
-	SLA_RECORD  = 0x05  /* Start Linear Address */
-} hex_record_t;
+typedef enum {
+    INTELHEX_LINE_TOO_LONG     = -3,
+    INTELHEX_CHECKSUM_MISMATCH = -2,
+    INTELHEX_INVALID_CHAR      = -1,
+    INTELHEX_DONE              = 0,
+    INTELHEX_TO_CONTINUE       = 1,
+    INTELHEX_TO_WRITE          = 2,
+    
+} intelhex_status_t;
 
 /** Prepare any state that is maintained for the start of a file
  *   @return none
  */
-void reset_hex_parser(void);
+void intelhex_reset(void);
 
 /** Convert a blob of hex data into its binary equivelant
  *   @param pbuf The input and formatted output buffer for data
@@ -28,7 +28,7 @@ void reset_hex_parser(void);
  *   @param size The amount of data in the buffer
  *   @return >=0 - complete, 
  */
-int32_t parse_hex_blob(uint8_t **pbuf, uint32_t *size, uint32_t *start_address);
+int32_t intelhex_parse(uint8_t **p_hex_buf, uint8_t **p_bin_buf, uint32_t *start_address, uint32_t hex_buf_size,  uint32_t bin_buf_size);
       
 #ifdef __cplusplus
 }
