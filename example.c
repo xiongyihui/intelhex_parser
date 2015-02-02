@@ -4,9 +4,9 @@
 #include <string.h>
 #include "intelhex.h"
 
-#define BIN_PAGE_SIZE   256
+#define BIN_PAGE_SIZE   512
 
-uint8_t hex_buf[1024];
+uint8_t hex_buf[512];
 uint8_t bin_buf[BIN_PAGE_SIZE];
 
 int main(int argc, char *argv[]) {
@@ -19,6 +19,7 @@ int main(int argc, char *argv[]) {
     uint32_t continuous_data_start = 0;
     uint32_t continuous_data_size = 0;
     uint32_t bin_size;
+    uint32_t bin_start = 0;
     
     FILE *f;
     char *filename = "example.hex";
@@ -53,6 +54,10 @@ int main(int argc, char *argv[]) {
             
             status = intelhex_parse(&hex_ptr, &bin_ptr, &addr, hex_buf_size, bin_buf_size);
 
+            if (last_bin_ptr == bin_buf) {
+                bin_start = addr;
+            }
+            
             bin_size = bin_ptr - bin_buf;
             
             new_bin = bin_ptr - last_bin_ptr;
@@ -69,12 +74,16 @@ int main(int argc, char *argv[]) {
             if (0 > status) {
                 printf("Invalid record. Exit\n");
                 fclose(f);
-                return -2;
+                return -1;
             }
             
             if (INTELHEX_DONE == status) {                
                 // write bin data
-                printf("--> 0x%X bin\n", bin_size);
+                printf("--> 0x%X: 0x%X bin\n", bin_start, bin_size);
+                
+                if (continuous_data_size) {
+                    printf("0x%X: 0x%X bytes data block\n", continuous_data_start, continuous_data_size);
+                }
             
                 printf("Get EOF record. Mission Complete\n");
                 fclose(f);
@@ -82,9 +91,9 @@ int main(int argc, char *argv[]) {
             }
             
             if (INTELHEX_TO_WRITE == status) {
-                if (0 < bin_size) {
+                if (bin_size) {
                     // write bin data
-                    printf("--> 0x%X bin\n", bin_size);
+                    printf("--> 0x%X: 0x%X bin\n", bin_start, bin_size);
                     
                     bin_ptr = bin_buf;
                 }
@@ -94,7 +103,7 @@ int main(int argc, char *argv[]) {
             
             if (BIN_PAGE_SIZE <= bin_size) {
                 // write a page of bin data
-                printf("--> 0x%X bin\n", BIN_PAGE_SIZE);
+                printf("--> 0x%X: 0x%X bin\n", bin_start, bin_size);
                 
                 memcpy(bin_buf, bin_buf + BIN_PAGE_SIZE, bin_size - BIN_PAGE_SIZE);
                 bin_ptr -= BIN_PAGE_SIZE;

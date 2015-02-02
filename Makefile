@@ -1,7 +1,7 @@
 # Makefile for Intel HEX parser
 #
 
-CFLAGS += -g
+CFLAGS += -pg
 	
 example: example.c intelhex.c intelhex.h
 	${CC} ${CFLAGS} $^ -o $@
